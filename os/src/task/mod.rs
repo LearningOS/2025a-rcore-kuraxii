@@ -48,6 +48,8 @@ struct TaskManagerInner {
     current_task: usize,
 }
 
+
+use crate::syscall::{ TOTAL_SYSTEMCALL, syscall_id_to_index};
 lazy_static! {
     /// a `TaskManager` global instance through lazy_static!
     pub static ref TASK_MANAGER: TaskManager = {
@@ -152,6 +154,30 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    /// 当前进程系统调用计数
+    pub fn syscall_count_inc(&self, syscall_id : usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let index = match syscall_id_to_index(syscall_id) {
+            Some(index) => index,
+            None => panic!("unknow syscall")
+        };
+        inner.tasks[current].syscall_count[index]+=1;
+    }
+
+    /// 返回当前进程的系统调用计数 
+    pub fn get_syscall_count(&self, syscall_id : usize) -> usize{
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let index = match syscall_id_to_index(syscall_id) {
+            Some(index) => index,
+            None => panic!("unknow syscall")
+        };
+
+        println!("get syscall count: {}", inner.tasks[current].syscall_count[index]);
+        inner.tasks[current].syscall_count[index] as usize
     }
 }
 

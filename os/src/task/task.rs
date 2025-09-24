@@ -1,10 +1,14 @@
 //! Types related to task management
 use super::TaskContext;
+
 use crate::config::TRAP_CONTEXT_BASE;
 use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
 use crate::trap::{trap_handler, TrapContext};
+
+use crate::syscall::{ TOTAL_SYSTEMCALL};
+
 
 /// The task control block (TCB) of a task.
 pub struct TaskControlBlock {
@@ -28,6 +32,9 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+
+    /// 系统调用调用计数  使用 syscall_id_to_index 将系统调用转化为index 减少空间浪费
+    pub syscall_count : [u32; TOTAL_SYSTEMCALL],
 }
 
 impl TaskControlBlock {
@@ -96,6 +103,9 @@ impl TaskControlBlock {
             None
         }
     }
+
+    
+
 }
 
 #[derive(Copy, Clone, PartialEq)]
