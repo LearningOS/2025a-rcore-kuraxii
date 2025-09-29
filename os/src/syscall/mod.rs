@@ -25,22 +25,22 @@ const SYSCALL_MMAP: usize = 222;
 /// trace syscall
 const SYSCALL_TRACE: usize = 410;
 
-const SYSTEMCALL_MAP : [usize; TOTAL_SYSTEMCALL] = [64, 93, 124, 169, 410];
+const SYSTEMCALL_MAP: [usize; TOTAL_SYSTEMCALL] = [64, 93, 124, 169, 214, 215, 222, 410];
 
 /// 统计系统调用总数
-pub const TOTAL_SYSTEMCALL : usize = 5;
+pub const TOTAL_SYSTEMCALL: usize = 8;
 
 /// 将syscall id 转化为 index
-pub fn syscall_id_to_index(syscall_id : usize) -> Option<usize>{
+pub fn syscall_id_to_index(syscall_id: usize) -> Option<usize> {
     SYSTEMCALL_MAP.iter().position(|&id| id == syscall_id)
 }
 
 mod fs;
 mod process;
 
+use crate::task::TASK_MANAGER;
 use fs::*;
 use process::*;
-use crate::task::TASK_MANAGER;
 
 /// handle syscall exception with `syscall_id` and other arguments
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {

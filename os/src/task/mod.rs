@@ -16,6 +16,7 @@ mod task;
 
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
+use crate::syscall::syscall_id_to_index;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
@@ -48,8 +49,6 @@ struct TaskManagerInner {
     current_task: usize,
 }
 
-
-use crate::syscall::{ TOTAL_SYSTEMCALL, syscall_id_to_index};
 lazy_static! {
     /// a `TaskManager` global instance through lazy_static!
     pub static ref TASK_MANAGER: TaskManager = {
@@ -157,27 +156,51 @@ impl TaskManager {
     }
 
     /// 当前进程系统调用计数
-    pub fn syscall_count_inc(&self, syscall_id : usize) {
+    pub fn syscall_count_inc(&self, syscall_id: usize) {
         let mut inner = self.inner.exclusive_access();
         let current = inner.current_task;
         let index = match syscall_id_to_index(syscall_id) {
             Some(index) => index,
-            None => panic!("unknow syscall")
+            None => panic!("unknow syscall"),
         };
-        inner.tasks[current].syscall_count[index]+=1;
+        inner.tasks[current].syscall_count[index] += 1;
     }
 
-    /// 返回当前进程的系统调用计数 
-    pub fn get_syscall_count(&self, syscall_id : usize) -> usize{
+    /// 返回当前进程的系统调用计数
+    pub fn get_syscall_count(&self, syscall_id: usize) -> usize {
         let inner = self.inner.exclusive_access();
         let current = inner.current_task;
         let index = match syscall_id_to_index(syscall_id) {
             Some(index) => index,
-            None => panic!("unknow syscall")
+            None => panic!("unknow syscall"),
         };
 
-        println!("get syscall count: {}", inner.tasks[current].syscall_count[index]);
+        println!(
+            "get syscall count: {}",
+            inner.tasks[current].syscall_count[index]
+        );
         inner.tasks[current].syscall_count[index] as usize
+    }
+
+    /// 为当前进程 映射内存
+    pub fn do_current_mmap(&self, start: usize, len: usize, prot: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].mmap(start, len, prot)
+    }
+
+    /// 为当前进程解除内存映射
+    pub fn do_current_munmap(&self, start: usize, len: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].munmap(start, len)
+    }
+
+    /// 
+    pub fn dump_area(&self){
+        // let inner = self.inner.exclusive_access();
+        // let current = inner.current_task;
+        // inner.tasks[current].memory_set.dump();
     }
 }
 
@@ -227,4 +250,17 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// mmap 代理
+pub fn do_mmap(start: usize, len: usize, port: usize) -> isize {
+    let ret = TASK_MANAGER.do_current_mmap(start, len, port);
+    TASK_MANAGER.dump_area();
+    ret
+}
+/// munmap 代理
+pub fn do_munmap(start: usize, len: usize) -> isize {
+    let ret = TASK_MANAGER.do_current_munmap(start, len);
+    TASK_MANAGER.dump_area();
+    ret
 }

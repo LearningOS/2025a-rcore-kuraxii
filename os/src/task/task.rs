@@ -7,8 +7,7 @@ use crate::mm::{
 };
 use crate::trap::{trap_handler, TrapContext};
 
-use crate::syscall::{ TOTAL_SYSTEMCALL};
-
+use crate::syscall::TOTAL_SYSTEMCALL;
 
 /// The task control block (TCB) of a task.
 pub struct TaskControlBlock {
@@ -34,7 +33,7 @@ pub struct TaskControlBlock {
     pub program_brk: usize,
 
     /// 系统调用调用计数  使用 syscall_id_to_index 将系统调用转化为index 减少空间浪费
-    pub syscall_count : [u32; TOTAL_SYSTEMCALL],
+    pub syscall_count: [usize; TOTAL_SYSTEMCALL],
 }
 
 impl TaskControlBlock {
@@ -70,6 +69,7 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            syscall_count: [0; TOTAL_SYSTEMCALL],
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
@@ -104,8 +104,45 @@ impl TaskControlBlock {
         }
     }
 
-    
+    /// 应用程序虚拟地址映射
+    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> isize {
+        if !VirtAddr::from(start).aligned() {
+            return -1;
+        }
+        // 检查权限
+        if (prot & !0x7 != 0) || (prot & 0x7 == 0) {
+            return -1;
+        }
 
+        let flag_opt = MapPermission::from_bits((prot << 1) as u8);
+        if flag_opt.is_none() {
+            return -1;
+        }
+
+        let mut flag = match flag_opt {
+            Some(flag) => flag,
+            None => MapPermission::empty(),
+        };
+
+        flag.insert(MapPermission::U);
+
+        self.memory_set.mmap(
+            VirtAddr::from(start).floor(),
+            VirtAddr(start + len).ceil(),
+            flag,
+        )
+    }
+
+    /// 解除映射
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        if !VirtAddr::from(start).aligned() {
+            return -1;
+        }
+        self.memory_set.munmap(
+            VirtAddr::from(start).floor(),
+            VirtAddr(start + len).ceil(),
+        )
+    }
 }
 
 #[derive(Copy, Clone, PartialEq)]
