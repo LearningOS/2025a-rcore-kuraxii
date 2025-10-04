@@ -1,4 +1,17 @@
 //! Types related to task management & Functions for completely changing TCB
+use super::TaskContext;
+use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
+use crate::config::TRAP_CONTEXT_BASE;
+use crate::fs::{File, Stdin, Stdout};
+use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::sync::UPSafeCell;
+use crate::trap::{trap_handler, TrapContext};
+
+use crate::syscall::TOTAL_SYSTEMCALL;
+use alloc::sync::{Arc, Weak};
+use alloc::vec;
+use alloc::vec::Vec;
 
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle, SignalActions, SignalFlags, TaskContext};
 use crate::{
@@ -87,6 +100,15 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// 系统调用调用计数  使用 syscall_id_to_index 将系统调用转化为index 减少空间浪费
+    pub syscall_count: [usize; TOTAL_SYSTEMCALL],
+
+    /// 进程优先级
+    pub priority : isize,
+
+    /// 进程调度当前stride值  每次被调度 stride += MAX_STRIDE / priority;
+    pub stride : usize,
 }
 
 impl TaskControlBlockInner {
@@ -109,6 +131,63 @@ impl TaskControlBlockInner {
             self.fd_table.push(None);
             self.fd_table.len() - 1
         }
+    }
+
+    pub fn set_priority(&mut self, priority: isize) -> isize{
+        if priority <= 1 {
+            return -1;
+        }
+        self.priority = priority;
+        priority
+    }
+
+    /// 应用程序虚拟地址映射
+    pub fn mmap(&mut self, start: usize, len: usize, port: usize) -> isize {
+        if !VirtAddr::from(start).aligned() {
+            return -1;
+        }
+        // 检查权限
+        if (port & !0x7 != 0) || (port & 0x7 == 0) {
+            return -1;
+        }
+
+        let flag_opt = MapPermission::from_bits((port << 1) as u8);
+        if flag_opt.is_none() {
+            return -1;
+        }
+
+        let mut flag = match flag_opt {
+            Some(flag) => flag,
+            None => MapPermission::empty(),
+        };
+
+        flag.insert(MapPermission::U);
+
+        self.memory_set.mmap(
+            VirtAddr::from(start).floor(),
+            VirtAddr(start + len).ceil(),
+            flag,
+        )
+    }
+
+    /// 解除映射
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        if !VirtAddr::from(start).aligned() {
+            return -1;
+        }
+
+        self.memory_set
+            .munmap(VirtAddr::from(start).floor(), VirtAddr(start + len).ceil())
+    }
+
+    /// 获取当前stride
+    pub fn get_stride(&self) -> usize{
+        self.stride
+    }
+    /// 计算下一个stride值
+    pub fn next_stride(&mut self){
+        // 防止stride被快速溢出
+        self.stride += (u8::MAX / self.priority as u8) as usize;
     }
 }
 
@@ -158,6 +237,9 @@ impl TaskControlBlock {
                     trap_ctx_backup: None,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    syscall_count: [0; TOTAL_SYSTEMCALL],
+                    priority: 16,
+                    stride : 0
                 })
             },
         };
@@ -273,6 +355,9 @@ impl TaskControlBlock {
                     trap_ctx_backup: None,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    syscall_count: [0; TOTAL_SYSTEMCALL],
+                    priority: parent_inner.priority,
+                    stride : 0,
                 })
             },
         });
