@@ -21,9 +21,26 @@ impl TaskManager {
     pub fn add(&mut self, task: Arc<TaskControlBlock>) {
         self.ready_queue.push_back(task);
     }
+    
     /// Take a process out of the ready queue
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+        // 1. 查找最小 stride 任务的索引
+        let min_stride_index = self
+            .ready_queue
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, tcb)| tcb.inner_exclusive_access().get_stride())
+            .map(|(index, _)| index)?;
+
+        // 2. 根据索引移除任务
+        let tcb = self.ready_queue.remove(min_stride_index)?;
+
+        // 3. 更新 stride
+        tcb.inner_exclusive_access().next_stride();
+
+        // 4. 返回任务
+        Some(tcb)
+       
     }
 }
 
