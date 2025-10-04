@@ -38,6 +38,16 @@ const SYSCALL_WAITPID: usize = 260;
 /// spawn syscall
 const SYSCALL_SPAWN: usize = 400;
 
+const SYSTEMCALL_MAP: &[usize] = &[64, 93, 124, 169, 214, 215, 222, 260, 400];
+
+/// 统计系统调用总数
+pub const TOTAL_SYSTEMCALL: usize = SYSTEMCALL_MAP.len();
+
+/// 将syscall id 转化为 index
+pub fn syscall_id_to_index(syscall_id: usize) -> Option<usize> {
+    SYSTEMCALL_MAP.iter().position(|&id| id == syscall_id)
+}
+
 mod fs;
 mod process;
 

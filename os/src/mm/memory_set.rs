@@ -7,7 +7,7 @@ use crate::config::{MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_S
 use crate::sync::UPSafeCell;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
+
 use core::arch::asm;
 use lazy_static::*;
 use riscv::register::satp;
@@ -33,7 +33,7 @@ lazy_static! {
 /// address space
 pub struct MemorySet {
     page_table: PageTable,
-    areas: Vec<MapArea>,
+    areas: BTreeMap<VirtPageNum, MapArea>,
 }
 
 impl MemorySet {
@@ -41,7 +41,7 @@ impl MemorySet {
     pub fn new_bare() -> Self {
         Self {
             page_table: PageTable::new(),
-            areas: Vec::new(),
+            areas: BTreeMap::new(),
         }
     }
     /// Get the page table token
@@ -62,14 +62,8 @@ impl MemorySet {
     }
     /// remove a area
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtPageNum) {
-        if let Some((idx, area)) = self
-            .areas
-            .iter_mut()
-            .enumerate()
-            .find(|(_, area)| area.vpn_range.get_start() == start_vpn)
-        {
+        if let Some(mut area) = self.areas.remove(&start_vpn){
             area.unmap(&mut self.page_table);
-            self.areas.remove(idx);
         }
     }
     /// Add a new MapArea into this MemorySet.
@@ -80,7 +74,7 @@ impl MemorySet {
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data);
         }
-        self.areas.push(map_area);
+        self.areas.insert(map_area.vpn_range.get_start(), map_area);
     }
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
@@ -239,7 +233,7 @@ impl MemorySet {
         // map trampoline
         memory_set.map_trampoline();
         // copy data sections/trap_context/user_stack
-        for area in user_space.areas.iter() {
+        for (_, area) in user_space.areas.iter() {
             let new_area = MapArea::from_another(area);
             memory_set.push(new_area, None);
             // copy data from another space
@@ -277,9 +271,9 @@ impl MemorySet {
         if let Some(area) = self
             .areas
             .iter_mut()
-            .find(|area| area.vpn_range.get_start() == start.floor())
+            .find(|area| area.1.vpn_range.get_start() == start.floor())
         {
-            area.shrink_to(&mut self.page_table, new_end.ceil());
+            area.1.shrink_to(&mut self.page_table, new_end.ceil());
             true
         } else {
             false
@@ -292,13 +286,89 @@ impl MemorySet {
         if let Some(area) = self
             .areas
             .iter_mut()
-            .find(|area| area.vpn_range.get_start() == start.floor())
+            .find(|area| area.1.vpn_range.get_start() == start.floor())
         {
-            area.append_to(&mut self.page_table, new_end.ceil());
+            area.1.append_to(&mut self.page_table, new_end.ceil());
             true
         } else {
             false
         }
+    }
+
+    #[allow(unused)]
+    /// 判断区间 是否与已存在内存区域重叠  start 必须 <= end
+    fn is_overlapping(&self, start: VirtPageNum, end: VirtPageNum) -> bool {
+        assert!(start <= end, "start must be <= end");
+        // 第一个大于等于start的区间的起始在 start..end 内  则重合
+        if let Some((area_start, area)) = self.areas.range(start..).next() {
+            if *area_start < end {
+                return true;
+            }
+        }
+
+        // 第一个小于等于start的区间的结束在  start..end 内 则重合
+        if let Some((_, area)) = self.areas.range(..=start).next_back() {
+            if start < area.vpn_range.get_end() {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// 创建 mmap  addr 向下对齐   end 向上对齐, 返回对齐后的addr
+    #[allow(unused)]
+    pub fn mmap(
+        &mut self,
+        start: VirtPageNum,
+        mut end: VirtPageNum,
+        map_perm: MapPermission,
+    ) -> isize {
+        // 判断是否重叠
+        if (self.is_overlapping(start, end)) {
+            println!(
+                "[kernel] Address area overlapping! start:{:?} end:{:?}",
+                start, end
+            );
+
+            return -1;
+        }
+
+        self.push(
+            MapArea::new(start.into(), end.into(), MapType::Framed, map_perm),
+            None,
+        );
+        0
+    }
+
+    /// 取消 mmap
+    #[allow(unused)]
+    pub fn munmap(&mut self, start: VirtPageNum, mut end: VirtPageNum) -> isize {
+        self.dump();
+        let Some(mut area) = self.areas.remove(&start) else {
+            println!("[kernel] Start address can not find");
+            return -1;
+        };
+
+        if area.vpn_range.get_end() != end {
+            self.areas.insert(start, area);
+            return -1;
+        }
+
+        area.unmap(&mut self.page_table);
+        0
+    }
+    ///
+    pub fn dump(&self) {
+        println!("===========================");
+        self.areas.iter().for_each(|(_, area)| {
+            println!(
+                "start:{:?} end:{:?}",
+                area.vpn_range.get_start(),
+                area.vpn_range.get_end() // 注意这里修正了重复打印 start 的问题
+            );
+        });
+        println!("===========================");
     }
 }
 /// map area structure, controls a contiguous piece of virtual memory

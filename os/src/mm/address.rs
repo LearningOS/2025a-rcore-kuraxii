@@ -269,5 +269,16 @@ where
         }
     }
 }
+
+/// 实现SimpleRange的值比较
+impl<T> PartialEq for SimpleRange<T>
+where
+    T: StepByOne + Copy + PartialEq + PartialOrd + Debug,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.l == other.l && self.r == other.r
+    }
+}
+
 /// a simple range structure for virtual page number
 pub type VPNRange = SimpleRange<VirtPageNum>;

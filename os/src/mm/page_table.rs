@@ -62,6 +62,11 @@ impl PageTableEntry {
     pub fn executable(&self) -> bool {
         (self.flags() & PTEFlags::X) != PTEFlags::empty()
     }
+    /// The page pointered by page table entry is valid?
+    pub fn is_user_accessible(&self) -> bool {
+        (self.flags() & PTEFlags::U) != PTEFlags::empty()
+    }
+    
 }
 
 /// page table structure
@@ -212,4 +217,94 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
         .translate_va(VirtAddr::from(va))
         .unwrap()
         .get_mut()
+}
+
+
+
+#[allow(unused)]
+/// 从用户态复制数据
+pub fn copy_from_user(token: usize, dest: *mut u8, src: *const u8, len: usize) -> isize {
+    let mut current_dest = dest as usize;
+    let page_table = PageTable::from_token(token);
+    let mut current_start = src as usize;
+
+    let end = current_start + len;
+    while current_start < end {
+        let start_va = VirtAddr::from(current_start);
+        let mut vpn = start_va.floor();
+        let pte = match page_table.translate(vpn) {
+            Some(pte) => pte,
+            // 如果页页表不存在则失败
+            None => return -1,
+        };
+        // 页表不可读 则失败
+        if !pte.is_valid() || !pte.is_user_accessible() || !pte.readable() {
+            return -1;
+        }
+        let ppn = pte.ppn();
+
+        vpn.step();
+        // offset+len 可能跨页
+        let mut page_boundary: VirtAddr = vpn.into();
+        let chunk_end_addr = page_boundary.min(VirtAddr(end));
+
+        // 计算真实的复制大小
+        let real_copy = chunk_end_addr.0 - start_va.0;
+
+        let slice = ppn.get_bytes_array();
+        // 将[start, start + realcopy] 赋值到 dest
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                slice.as_ptr().add(start_va.page_offset()),
+                current_dest as *mut u8,
+                real_copy,
+            )
+        };
+        current_dest += real_copy;
+        current_start += real_copy;
+    }
+    0
+}
+
+#[allow(unused)]
+/// 从数据到内核态
+pub fn copy_to_user(token: usize, dest: *mut u8, src: *const u8, len: usize) -> isize {
+    let mut current_src = src as usize;
+    let page_table = PageTable::from_token(token);
+    let mut current_start = dest as usize;
+    let end = current_start + len;
+    while current_start < end {
+        let start_va = VirtAddr::from(current_start);
+        let mut vpn = start_va.floor();
+        let pte = match page_table.translate(vpn) {
+            Some(pte) => pte,
+            // 如果页页表不存在则失败
+            None => return -1,
+        };
+        // 页表不可写 则失败
+        if !pte.is_valid() || !pte.is_user_accessible()  ||!pte.writable() {
+            return -1;
+        }
+        let ppn = pte.ppn();
+
+        vpn.step();
+        // offset+len 可能跨页
+        let mut page_boundary: VirtAddr = vpn.into();
+        let chunk_end_addr = page_boundary.min(VirtAddr(end));
+
+        // 计算真实的复制大小
+        let real_copy = chunk_end_addr.0 - start_va.0;
+
+        let slice = &mut ppn.get_bytes_array();
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                current_src as *const u8,
+                slice.as_mut_ptr().add(start_va.page_offset()),
+                real_copy,
+            )
+        };
+        current_src += real_copy;
+        current_start += real_copy;
+    }
+    0
 }
