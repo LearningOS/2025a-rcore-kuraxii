@@ -1,5 +1,3 @@
-use crate::stat;
-
 use super::{
     block_cache_sync_all, get_block_cache, BlockDevice, DirEntry, DiskInode, DiskInodeType,
     EasyFileSystem, Stat, StatMode, DIRENT_SZ,

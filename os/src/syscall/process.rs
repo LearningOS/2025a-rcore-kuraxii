@@ -1,17 +1,18 @@
 //! Process management syscalls
 //!
+use core::mem;
+
 use alloc::sync::Arc;
 
 use crate::{
     fs::{open_file, OpenFlags},
-    loader::get_app_data_by_name,
     mm::{translated_byte_buffer, translated_ref, translated_refmut, translated_str},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next, pid2task,
         suspend_current_and_run_next, SignalAction, SignalFlags, MAX_SIG,
-    },
+    }, timer::get_time_us,
 };
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{string::String, vec::Vec};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -227,7 +228,7 @@ pub fn sys_spawn(_path: *const u8) -> isize {
     let path = translated_str(token, _path);
     if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) {
         let all_data = app_inode.read_all();
-        new_task.exec(all_data.as_slice());
+        new_task.exec(all_data.as_slice(), Vec::new());
         add_task(new_task);
         new_pid as isize
     } else {
