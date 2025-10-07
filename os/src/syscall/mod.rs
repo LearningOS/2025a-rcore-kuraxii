@@ -49,7 +49,7 @@ const SYSCALL_WAITPID: usize = 260;
 /// spawn syscall
 const SYSCALL_SPAWN: usize = 400;
 
-const SYSTEMCALL_MAP: &[usize] = &[64, 93, 124, 169, 214, 215, 222, 260, 400];
+const SYSTEMCALL_MAP: &[usize] = &[35, 37, 56, 57, 63, 64, 80, 93, 124, 140, 169, 172, 214, 215, 220, 221, 222, 260, 400];
 
 /// 统计系统调用总数
 pub const TOTAL_SYSTEMCALL: usize = SYSTEMCALL_MAP.len();
