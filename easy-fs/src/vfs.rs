@@ -1,6 +1,8 @@
+use crate::stat;
+
 use super::{
     block_cache_sync_all, get_block_cache, BlockDevice, DirEntry, DiskInode, DiskInodeType,
-    EasyFileSystem, DIRENT_SZ,
+    EasyFileSystem, Stat, StatMode, DIRENT_SZ,
 };
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -8,6 +10,7 @@ use alloc::vec::Vec;
 use spin::{Mutex, MutexGuard};
 
 pub struct Inode {
+    inode_id: usize,
     block_id: usize,
     block_offset: usize,
     fs: Arc<Mutex<EasyFileSystem>>,
@@ -17,12 +20,14 @@ pub struct Inode {
 impl Inode {
     /// We should not acquire efs lock here.
     pub fn new(
+        inode_id: u32,
         block_id: u32,
         block_offset: usize,
         fs: Arc<Mutex<EasyFileSystem>>,
         block_device: Arc<dyn BlockDevice>,
     ) -> Self {
         Self {
+            inode_id: inode_id as usize,
             block_id: block_id as usize,
             block_offset,
             fs,
@@ -59,12 +64,31 @@ impl Inode {
         None
     }
 
+    /// 获取目录项的位置
+    fn get_dentry_index(&self, name: &str, disk_inode: &DiskInode) -> Option<u32> {
+        assert!(disk_inode.is_dir());
+        let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+        let mut dirent = DirEntry::empty();
+        for i in 0..file_count {
+            assert_eq!(
+                disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
+                DIRENT_SZ,
+            );
+            if dirent.name() == name {
+                return Some(i as u32);
+            }
+        }
+        None
+    }
+    /// Find inode under current inode by name
+
     pub fn find(&self, name: &str) -> Option<Arc<Inode>> {
         let fs = self.fs.lock();
         self.read_disk_inode(|disk_inode| {
             self.find_inode_id(name, disk_inode).map(|inode_id| {
                 let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
                 Arc::new(Self::new(
+                    inode_id,
                     block_id,
                     block_offset,
                     self.fs.clone(),
@@ -131,6 +155,7 @@ impl Inode {
         block_cache_sync_all();
         // return inode
         Some(Arc::new(Self::new(
+            new_inode_id,
             block_id,
             block_offset,
             self.fs.clone(),
@@ -182,5 +207,141 @@ impl Inode {
             }
         });
         block_cache_sync_all();
+    }
+
+    /// 创建硬连接    
+    pub fn linkat(&self, old_name: &str, new_name: &str) -> i32 {
+        let mut fs = self.fs.lock();
+        let op = |root_inode: &DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_inode_id(old_name, root_inode)
+        };
+        let Some(inode_id) = self.read_disk_inode(op) else {
+            return -1;
+        };
+
+        // 判断 new_name是否存在
+        if self
+            .read_disk_inode(|root_inode| self.find_inode_id(new_name, root_inode))
+            .is_some()
+        {
+            return -1;
+        }
+
+        // 创建硬链接 不需要创建新的inode 只需要在root_inode 新增一个entry
+        self.modify_disk_inode(|root_inode| {
+            // append file in the dirent
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let new_size = (file_count + 1) * DIRENT_SZ;
+            // increase size
+            self.increase_size(new_size as u32, root_inode, &mut fs);
+            // write dirent
+            let dirent = DirEntry::new(new_name, inode_id);
+            root_inode.write_at(
+                file_count * DIRENT_SZ,
+                dirent.as_bytes(),
+                &self.block_device,
+            );
+        });
+
+        // 为inode引用计数 +1
+        let (inode_block_id, inode_block_offset) = fs.get_disk_inode_pos(inode_id);
+        get_block_cache(inode_block_id as usize, Arc::clone(&self.block_device))
+            .lock()
+            .modify(inode_block_offset, |disk_inode: &mut DiskInode| {
+                disk_inode.add_ref();
+            });
+
+        block_cache_sync_all();
+        0
+    }
+
+    /// 删除文件
+    pub fn unlink(&self, name: &str) -> i32 {
+        let mut fs = self.fs.lock();
+        let op = |root_inode: &DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_inode_id(name, root_inode)
+        };
+        let Some(inode_id) = self.read_disk_inode(op) else {
+            return -1;
+        };
+
+        let Some(dentry_index) =
+            self.read_disk_inode(|root_inode: &DiskInode| self.get_dentry_index(name, root_inode))
+        else {
+            return -1;
+        };
+
+        // 2. 从目录中移除 DirEntry
+        self.modify_disk_inode(|dir_inode| {
+            let last_entry_offset = dir_inode.size as usize - DIRENT_SZ;
+            // 读取最后一个 entry
+            let mut last_dirent = DirEntry::empty();
+            dir_inode.read_at(
+                last_entry_offset,
+                last_dirent.as_bytes_mut(),
+                &self.block_device,
+            );
+            // 将最后一个dentry移动到将要删除的dentry
+            dir_inode.write_at(
+                (dentry_index * DIRENT_SZ as u32) as usize,
+                last_dirent.as_bytes(),
+                &self.block_device,
+            );
+            // 缩减inode大小
+            dir_inode.size -= DIRENT_SZ as u32;
+        });
+
+        // 3. 获取目标 inode 并减少链接数
+        let (inode_block_id, inode_block_offset) = fs.get_disk_inode_pos(inode_id);
+        let nlink = get_block_cache(inode_block_id as usize, self.block_device.clone())
+            .lock()
+            .modify(inode_block_offset, |disk_inode: &mut DiskInode| {
+                disk_inode.nlink -= 1;
+                disk_inode.nlink
+            });
+
+        // 4. 如果 nlink 为 0，回收资源
+        if nlink == 0 {
+            // 4.1 回收数据块
+            let data_blocks_dealloc =
+                get_block_cache(inode_block_id as usize, self.block_device.clone())
+                    .lock()
+                    .modify(inode_block_offset, |disk_inode: &mut DiskInode| {
+                        disk_inode.clear_size(&self.block_device)
+                    });
+
+            for block_id in data_blocks_dealloc {
+                fs.dealloc_data(block_id);
+            }
+
+            // 4.2 回收 inode
+            fs.dealloc_inode(inode_id);
+        }
+
+        block_cache_sync_all();
+        0
+    }
+
+    /// 获取文件信息
+    pub fn get_attr(&self, _st: *mut Stat) -> i32 {
+        let _fs = self.fs.lock();
+        self.read_disk_inode(|disk_inode| unsafe {
+            (*_st).dev = 0;
+            (*_st).ino = self.inode_id as u64;
+            (*_st).mode = if disk_inode.is_dir() {
+                StatMode::DIR
+            } else {
+                StatMode::FILE
+            };
+            (*_st).nlink = disk_inode.nlink;
+        });
+
+        0
     }
 }

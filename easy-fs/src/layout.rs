@@ -73,6 +73,7 @@ pub struct DiskInode {
     pub direct: [u32; INODE_DIRECT_COUNT],
     pub indirect1: u32,
     pub indirect2: u32,
+    pub nlink : u32,
     type_: DiskInodeType,
 }
 
@@ -84,6 +85,7 @@ impl DiskInode {
         self.indirect1 = 0;
         self.indirect2 = 0;
         self.type_ = type_;
+        self.nlink = 1;
     }
     pub fn is_dir(&self) -> bool {
         self.type_ == DiskInodeType::Directory
@@ -367,6 +369,11 @@ impl DiskInode {
             start = end_current_block;
         }
         write_size
+    }
+
+    /// 增加inode引用计数
+    pub fn add_ref(&mut self){
+        self.nlink += 1;
     }
 }
 

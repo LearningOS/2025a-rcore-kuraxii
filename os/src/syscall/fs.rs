@@ -1,5 +1,5 @@
 //! File and filesystem-related syscalls
-use crate::fs::{make_pipe, open_file, OpenFlags, Stat};
+use crate::fs::{unlinkat, linkat, open_file,make_pipe, OpenFlags, Stat};
 use crate::mm::{translated_byte_buffer, translated_refmut, translated_str, UserBuffer};
 use crate::task::{current_task, current_user_token};
 use alloc::sync::Arc;
@@ -107,19 +107,50 @@ pub fn sys_dup(fd: usize) -> isize {
 }
 
 /// YOUR JOB: Implement fstat.
-pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
-    trace!("kernel:pid[{}] sys_fstat NOT IMPLEMENTED", current_task().unwrap().pid.0);
-    -1
+pub fn sys_fstat(fd: usize, _st: *mut Stat) -> isize {
+    debug!(
+        "kernel:pid[{}] sys_fstat NOT IMPLEMENTED",
+        current_task().unwrap().pid.0
+    );
+    let token = current_user_token();
+    let st_kernel = translated_refmut(token, _st);
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    if fd >= inner.fd_table.len() {
+        debug!("123");
+        return -1;
+    }
+    if let Some(file) = &inner.fd_table[fd] {
+        let file = file.clone();
+        // release current task TCB manually to avoid multi-borrow
+        drop(inner);
+        file.fstat(st_kernel) as isize
+    } else {
+        -1
+    }
 }
 
 /// YOUR JOB: Implement linkat.
 pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
-    trace!("kernel:pid[{}] sys_linkat NOT IMPLEMENTED", current_task().unwrap().pid.0);
-    -1
+    trace!(
+        "kernel:pid[{}] sys_linkat NOT IMPLEMENTED",
+        current_task().unwrap().pid.0
+    );
+
+    let token = current_user_token();
+    let old_name = translated_str(token, _old_name);
+    let new_name = translated_str(token, _new_name);
+    linkat(&old_name, &new_name) as isize
 }
 
 /// YOUR JOB: Implement unlinkat.
-pub fn sys_unlinkat(_name: *const u8) -> isize {
-    trace!("kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED", current_task().unwrap().pid.0);
-    -1
+pub fn sys_unlinkat(name: *const u8) -> isize {
+    trace!(
+        "kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED",
+        current_task().unwrap().pid.0
+    );
+    let token = current_user_token();
+    let name = translated_str(token, name);
+
+    unlinkat(&name) as isize
 }
